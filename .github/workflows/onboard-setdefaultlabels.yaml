@@ -1,0 +1,102 @@
+name: ONBOARD - set default labels to existing repos
+
+on:
+  workflow_dispatch:
+    inputs:
+      reposFile:
+        description: "Relative path to .github/workflows/config for JSON file of repos to onboard"
+        required: true
+        default: "repositories.json"
+      runtimeToken:
+        description: "Relative path to .github/workflows/config for JSON file of repos to onboard"
+        required: true
+        default: "NAH-AHHH"
+
+jobs:
+  read-json:
+    runs-on: [ubuntu-latest]
+    outputs:
+      repojson: ${{ steps.set-repo-json.outputs.repojson }}
+      labeljson: ${{ steps.set-label-json.outputs.labeljson }}
+    steps:
+      - uses: actions/checkout@v3
+      - id: set-repo-json
+        env:
+          JSONFILEPATH: .github/workflows/config/${{ github.event.inputs.reposFile }}
+        run: |
+          if [[ ! -f "$JSONFILEPATH" ]]; then
+              echo "Cannot find specified repo json file '$JSONFILEPATH'" >&2
+              exit 1
+          fi
+          JSON=$(cat $JSONFILEPATH)
+          JSON="${JSON//'%'/'%25'}"
+          JSON="${JSON//$'\n'/'%0A'}"
+          JSON="${JSON//$'\r'/'%0D'}"
+          echo "::set-output name=repojson::$JSON"
+      - id: set-label-json
+        env:
+          JSONFILEPATH: .github/workflows/config/default_labels.json
+        run: |
+          if [[ ! -f "$JSONFILEPATH" ]]; then
+              echo "Cannot find specified repo json file '$JSONFILEPATH'" >&2
+              exit 1
+          fi
+          JSON=$(cat $JSONFILEPATH)
+          JSON="${JSON//'%'/'%25'}"
+          JSON="${JSON//$'\n'/'%0A'}"
+          JSON="${JSON//$'\r'/'%0D'}"
+          echo "::set-output name=labeljson::$JSON"
+  add-labels:
+    runs-on: [ubuntu-latest]
+    needs: [read-json]
+    strategy:
+      matrix:
+        include: ${{ fromJson(needs.read-json.outputs.repojson) }}
+      max-parallel: 2
+      fail-fast: false
+    steps:
+      - name: Add missing label to repo
+        uses: actions/github-script@v6
+        id: arti
+        env:
+          OWNER: ${{ matrix.owner }}
+          REPO: ${{ matrix.repo }}
+        with:
+          github-token: ${{ github.event.inputs.runtimeToken }}
+          debug: true
+          script: |
+            console.log('getting current labels')
+            const { data: data } = await github.rest.issues.listLabelsForRepo({
+                owner: process.env.OWNER,
+                repo: process.env.REPO
+              });
+              
+            const labels = ${{ needs.read-json.outputs.labeljson }}
+            
+            for(var lb of labels)
+            {
+              if(data.filter(e => e.name === lb.name).length <= 0){
+                console.log('Found missing label below. Creating..')
+                await github.rest.issues.createLabel({
+                  owner: process.env.OWNER,
+                  repo: process.env.REPO,
+                  name: lb.name,
+                  color: lb.color,
+                  description: lb.description
+                });
+                console.log(lb)
+              } else if(data.filter(e => e.name === lb.name).length === 1){
+                const foundValue = data.filter(e => e.name === lb.name)[0];
+                if(foundValue.description != lb.description || foundValue.color != lb.color){
+                  console.log('found misaligned value')
+                  await github.rest.issues.updateLabel({
+                      owner: process.env.OWNER,
+                      repo: process.env.REPO,
+                      name: lb.name,
+                      color: lb.color,
+                      description: lb.description
+                    });
+                }
+              }
+            }
+            console.log('label(s) have been added')
